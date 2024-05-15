@@ -1,0 +1,63 @@
+Vagrant.configure("2") do |config|
+  config.vm.box = "archlinux/archlinux"
+  config.vm.disk :disk, size: "200GB", primary: true
+
+  # Currently "ubuntu/bionic64" on VirtualBox requires `type: "virtualbox"`
+  # to make synced folder works.
+  config.vm.synced_folder ".", "/vagrant", type: "virtualbox"
+  config.vm.synced_folder "pacman-cache", "/var/cache/pacman/pkg", type: "virtualbox"
+
+  config.vm.provider :virtualbox do |v|
+    v.gui = true
+    v.memory = 16384
+    v.cpus = 6
+    v.customize ["modifyvm", :id, "--vram", "128"]
+    v.customize ["modifyvm", :id, "--accelerate3d", "on"]
+  end
+  
+  config.vm.provision "basic-root-operation", type: "shell", privileged: true, inline: <<-SHELL
+    export LOCAL_USER=localusertochange
+    cp /vagrant/pacman.conf /etc/pacman.conf
+    cp /vagrant/makepkg.conf /etc/makepkg.conf
+    cp /vagrant/vconsole.conf /etc/vconsole.conf
+    pacman-key --keyserver hkp://keyserver.ubuntu.com -r 7568D9BB55FF9E5287D586017AE645C0CF8E292A
+    pacman-key --lsign-key 7568D9BB55FF9E5287D586017AE645C0CF8E292A
+    pacman -Sy --noconfirm
+    pacman -S --quiet --noconfirm --needed git base-devel sudo openssl go parted
+    parted -s -a opt /dev/sda "resizepart 2 100%"
+    id $LOCAL_USER || useradd -m -G wheel -s /bin/bash $LOCAL_USER
+    usermod -p $(openssl passwd -1 -salt 5RPVAd $LOCAL_USER) $LOCAL_USER
+    usermod -aG wheel vagrant
+    echo "%wheel ALL=(ALL:ALL) NOPASSWD: ALL" > /etc/sudoers
+    ln -sf /usr/share/zoneinfo/Europe/Paris /etc/localtime
+    echo "en_US.UTF-8 UTF-8" > /etc/locale.gen
+    echo "fr_FR.UTF-8 UTF-8" >> /etc/locale.gen
+    locale-gen
+    echo "LANG=fr_FR.UTF-8" > /etc/locale.conf
+  SHELL
+  
+  config.vm.provision "needed-package-manager", type: "shell", privileged: false, inline: <<-SHELL
+    command -v yay || (rm -fr yay ; git clone https://aur.archlinux.org/yay.git && cd yay && makepkg -si --noconfirm && cd .. ; rm -fr yay)
+    command -v pacaur || yay -S pacaur --noconfirm
+    command -v growpart || yay -S growpartfs --noconfirm
+  SHELL
+  
+  config.vm.provision "grow-partition", type: "shell", privileged: true, inline: <<-SHELL
+    growpart /dev/sda 3
+    btrfs filesystem resize max /
+    df -h /dev/sda3
+  SHELL
+  
+  config.vm.provision "install-all-package", type: "shell", privileged: false, inline: <<-SHELL
+    export LOCAL_USER=localusertochange
+    sudo su $LOCAL_USER bach -c " \
+      cd ~ ; \
+      yay --noconfirm ; \
+      sudo pacman -S --quiet --noconfirm --needed - < /vagrant/pacman-list.pkg ; \
+      xargs < /vagrant/aur-list.pkg pacaur -S --needed --noedit ; \
+      echo "[User]\nLanguage=\nXSession=gnome\nSystemAccount=true" | sudo tee /var/lib/AccountsService/users/vagrant
+      sudo systemctl enable --now NetworkManager ; \
+      sudo systemctl enable --now gdm.service ; \
+    "
+  SHELL
+end
