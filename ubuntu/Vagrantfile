@@ -1,43 +1,126 @@
 Vagrant.configure("2") do |config|
-  config.vm.box = "ubuntu/focal64"
+  config.vm.box = "bento/ubuntu-24.04"
+  config.vm.disk :disk, size: "200GB", primary: true
+  config.vm.boot_timeout = 600
 
-  config.vm.provider :virtualbox do |v|
-    v.gui = true
-    v.memory = 2048
-  end
-
-  # Currently "ubuntu/bionic64" on VirtualBox requires `type: "virtualbox"`
   # to make synced folder works.
   config.vm.synced_folder ".", "/vagrant", type: "virtualbox"
 
-  # Add Google Chrome repository
-  config.vm.provision :shell, inline: "wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub|sudo apt-key add -"
-  config.vm.provision :shell, inline: "sudo sh -c 'echo \"deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main\" > /etc/apt/sources.list.d/google.list'"
-
-  # Update repositories
-  config.vm.provision :shell, inline: "sudo apt update -y"
-
-  # Upgrade installed packages
-  config.vm.provision :shell, inline: "sudo apt upgrade -y"
-
-  # Add desktop environment
-  config.vm.provision :shell, inline: "sudo apt install -y --no-install-recommends ubuntu-desktop language-pack-fr language-pack-fr-base language-pack-gnome-fr language-pack-gnome-fr-base"
-  config.vm.provision :shell, inline: "sudo apt install -y --no-install-recommends virtualbox-guest-dkms virtualbox-guest-utils virtualbox-guest-x11"
-  # Add `vagrant` to Administrator
-  config.vm.provision :shell, inline: "sudo usermod -a -G sudo vagrant"
-
-  # Add Google Chrome
-  config.vm.provision :shell, inline: "sudo apt install -y google-chrome-stable"
-
-  # Add Chromium
-  config.vm.provision :shell, inline: "sudo apt install -y chromium-browser"
-
-  # Add Firefox
-  config.vm.provision :shell, inline: "sudo apt install -y firefox"
+  config.vm.provider :virtualbox do |v|
+    v.gui = true
+    v.memory = 16384
+    v.cpus = 4
+  end
   
-  # Generate fr locale
-  config.vm.provision :shell, inline: "sudo locale-gen && sudo update-locale LANG=fr_FR.UTF-8"
+  config.vm.provision "basic-root-operation", type: "shell", privileged: true, inline: <<-SHELL
+    export LOCAL_USER=localusertochange
+    apt-get update -y
+    apt-get upgrade -y
+    apt-get install -y --no-install-recommends \
+      git build-essential sudo openssl \
+      parted cloud-guest-utils \
+      apt-transport-https ca-certificates curl
+    parted -s -a opt /dev/sda "resizepart 2 100%"
+    id $LOCAL_USER || useradd -m -G sudo -s /bin/bash $LOCAL_USER
+    usermod -p $(openssl passwd -1 -salt 5RPVAd $LOCAL_USER) $LOCAL_USER
+    ln -sf /usr/share/zoneinfo/Europe/Paris /etc/localtime
+    echo "en_US.UTF-8 UTF-8" > /etc/locale.gen
+    echo "fr_FR.UTF-8 UTF-8" >> /etc/locale.gen
+    locale-gen
+    echo "LANG=fr_FR.UTF-8" > /etc/locale.conf
+  SHELL
 
-  # Restart
-  config.vm.provision :shell, inline: "sudo shutdown -r now"
+  config.vm.provision "grow-partition", type: "shell", privileged: true, inline: <<-SHELL
+    growpart /dev/sda 3
+    lvextend --resizefs -l 100%FREE /dev/mapper/ubuntu--vg-ubuntu--lv
+    df -h /dev/sda3
+  SHELL
+  
+  config.vm.provision "install-all-package", type: "shell", privileged: false, inline: <<-SHELL
+    export LOCAL_USER=localusertochange
+    sudo install -m 0755 -d /etc/apt/keyrings
+    # Add Google Chrome repository
+    wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo tee /etc/apt/trusted.gpg.d/google.asc >/dev/null
+    wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/google.gpg >/dev/null
+    sudo sh -c 'echo \"deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main\" > /etc/apt/sources.list.d/google.list'
+    # Add Firefox repository
+    wget -q https://packages.mozilla.org/apt/repo-signing-key.gpg -O- | sudo tee /etc/apt/keyrings/packages.mozilla.org.asc
+    echo "deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main" | sudo tee -a /etc/apt/sources.list.d/mozilla.list
+    echo '
+Package: *
+Pin: origin packages.mozilla.org
+Pin-Priority: 1000
+' | sudo tee /etc/apt/preferences.d/mozilla
+    sudo snap remove firefox
+    sudo apt-get remove firefox
+    #####
+    # Add VSCode repository
+    #####
+    wget -qO- https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > packages.microsoft.gpg
+    sudo install -D -o root -g root -m 644 packages.microsoft.gpg /etc/apt/keyrings/packages.microsoft.gpg
+    echo "deb [arch=amd64,arm64,armhf signed-by=/etc/apt/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main" |sudo tee /etc/apt/sources.list.d/vscode.list > /dev/null
+    rm -f packages.microsoft.gpg
+    #####
+    # Add Docker repository
+    #####
+    for pkg in docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc; do sudo apt-get remove $pkg; done
+    sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+    sudo chmod a+r /etc/apt/keyrings/docker.asc
+    echo \
+"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+$(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+    #####
+    # Add Pritunl repository
+    #####
+    echo "deb https://repo.pritunl.com/stable/apt noble main" | sudo tee /etc/apt/sources.list.d/pritunl.list
+    gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys 7568D9BB55FF9E5287D586017AE645C0CF8E292A
+    gpg --armor --export 7568D9BB55FF9E5287D586017AE645C0CF8E292A | sudo tee /etc/apt/trusted.gpg.d/pritunl.asc
+    #####
+    # Install all packages
+    #####
+    sudo apt-get update -y
+    sudo apt-get install -y --no-install-recommends \
+      ubuntu-desktop language-pack-fr language-pack-fr-base \
+      language-pack-gnome-fr language-pack-gnome-fr-base \
+      virtualbox-guest-utils virtualbox-guest-x11 \
+      google-chrome-stable google-chrome-beta chromium-browser \
+      firefox firefox-l10n-fr \
+      code \
+      docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
+      pritunl-client-electron
+    usermod -aG docker $LOCAL_USER
+    usermod -aG video $LOCAL_USER
+  SHELL
+
+  # # Add Google Chrome repository
+  # config.vm.provision :shell, inline: "wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub|sudo apt-key add -"
+  # config.vm.provision :shell, inline: "sudo sh -c 'echo \"deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main\" > /etc/apt/sources.list.d/google.list'"
+
+  # # Update repositories
+  # config.vm.provision :shell, inline: "sudo apt-get update -y"
+
+  # # Upgrade installed packages
+  # config.vm.provision :shell, inline: "sudo apt-get upgrade -y"
+
+  # # Add desktop environment
+  # config.vm.provision :shell, inline: "sudo apt-get install -y --no-install-recommends ubuntu-desktop language-pack-fr language-pack-fr-base language-pack-gnome-fr language-pack-gnome-fr-base"
+  # config.vm.provision :shell, inline: "sudo apt-get install -y --no-install-recommends virtualbox-guest-dkms virtualbox-guest-utils virtualbox-guest-x11"
+  # # Add `vagrant` to Administrator
+  # config.vm.provision :shell, inline: "sudo usermod -a -G sudo vagrant"
+
+  # # Add Google Chrome
+  # config.vm.provision :shell, inline: "sudo apt-get install -y google-chrome-stable"
+
+  # # Add Chromium
+  # config.vm.provision :shell, inline: "sudo apt-get install -y chromium-browser"
+
+  # # Add Firefox
+  # config.vm.provision :shell, inline: "sudo apt-get install -y firefox"
+  
+  # # Generate fr locale
+  # config.vm.provision :shell, inline: "sudo locale-gen && sudo update-locale LANG=fr_FR.UTF-8"
+
+  # # Restart
+  # config.vm.provision :shell, inline: "sudo shutdown -r now"
 end
