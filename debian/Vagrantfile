@@ -3,14 +3,12 @@ Vagrant.configure("2") do |config|
   config.vm.disk :disk, size: "200GB", primary: true
   config.vm.boot_timeout = 600
 
-  # to make synced folder works.
-  config.vm.synced_folder ".", "/vagrant", type: "virtualbox"
-
   config.vm.provider "hyperv"
   config.vm.provider "virtualbox"
 
   config.vm.provider :hyperv do |h|
-    h.memory = 16384
+    h.maxmemory = 24576
+    h.memory = 8192
     h.cpus = 4
   end
 
