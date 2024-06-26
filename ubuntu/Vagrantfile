@@ -1,5 +1,9 @@
 Vagrant.configure("2") do |config|
   config.vm.box = "gusztavvargadr/ubuntu-desktop-2404-lts"
+  config.vm.box_version = "2404.0.2405"
+  config.vm.box_download_checksum = "a314c051cca0d5b01da5937cb9384cf95679b61f0697ebbf5c98db55b830c10d"
+  config.vm.box_download_checksum_type = "sha256"
+
   config.vm.disk :disk, size: "200GB", primary: true
   config.vm.boot_timeout = 600
 
